@@ -11,6 +11,8 @@ export default function GameComponent() {
     const [message, setMessage] = useState("Siap menganalisa pola?");
     const [lostAt, setLostAt] = useState<{ lvl: number, idx: number } | null>(null);
     const [initialBet, setInitialBet] = useState<number | null>(null);
+    const [revealedBombs, setRevealedBombs] = useState<Record<number, number[]>>({});
+    const [selectedIndices, setSelectedIndices] = useState<Record<number, number>>({});
 
     // Multiplier per level
     const multipliers = [0, 1.23, 1.54, 1.93, 2.41, 4.02, 6.69, 11.16, 27.89, 69.74, 348.72];
@@ -23,31 +25,41 @@ export default function GameComponent() {
 
         const res = await fetch('/api/play', {
             method: 'POST',
-            body: JSON.stringify({ bet, level, initialBet: initialBet || bet }),
+            body: JSON.stringify({ index, bet, level, initialBet: initialBet || bet }),
         });
 
+
         const data = await res.json();
+
+        // Simpan index yang dipilih
+        setSelectedIndices(prev => ({ ...prev, [level]: index }));
 
         if (!data.success) {
             setMessage("BOOM! Algoritma mendeteksi bet Tuan.");
             setGameActive(false);
             setLostAt({ lvl: level, idx: index });
-            setInitialBet(null); // Reset tracking saat kalah agar sesi baru lebih adil
+            setInitialBet(null);
+            // Simpan semua posisi bom jika kalah
+            if (data.allBombs) {
+                setRevealedBombs(data.allBombs);
+            }
         } else {
-
             if (level >= 10) {
-                // Win level 10
                 const win = Math.floor(bet * multipliers[10]);
                 setBalance(prev => prev + win);
                 setGameActive(false);
-                setLevel(11); // Mark as complete
+                setLevel(11);
                 setMessage(`JACKPOT! IDR ${win.toLocaleString()}`);
+                if (data.allBombs) {
+                    setRevealedBombs(data.allBombs);
+                }
             } else {
                 setLevel(level + 1);
                 setMessage(`Level ${level} aman. Lanjut ke x${multipliers[level + 1]}?`);
             }
         }
     };
+
 
     const startGame = () => {
         if (bet > balance) return alert("Saldo tipis!");
@@ -60,19 +72,32 @@ export default function GameComponent() {
 
         setBalance(prev => prev - bet);
         setGameActive(true);
-
+        setRevealedBombs({});
+        setSelectedIndices({});
         setLevel(1);
         setLostAt(null);
         setMessage("Menganalisa Seed...");
     };
 
-    const cashOut = () => {
-        if (level <= 1) return;
+
+    const cashOut = async () => {
+        if (level <= 1 || !gameActive) return;
+        
+        // Ambil semua posisi bom untuk reveal
+        const res = await fetch('/api/play', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'reveal', level, bet, initialBet }),
+        });
+        const data = await res.json();
+        setRevealedBombs(data.allBombs);
+
         const win = Math.floor(bet * currentMultiplier);
         setBalance(prev => prev + win);
         setGameActive(false);
         setMessage(`Profit: IDR ${win.toLocaleString()}`);
     };
+
+
 
     const totalWinPotential = Math.floor(bet * nextMultiplier);
 
@@ -111,29 +136,51 @@ export default function GameComponent() {
                             <span className="text-[10px] font-bold text-slate-500 font-mono leading-none">x{multipliers[lvl]}</span>
                             <span className="text-[8px] text-slate-600 font-bold uppercase">lvl {lvl}</span>
                         </div>
-                        {[0, 1, 2, 3, 4].map((i) => (
-                            <div
-                                key={i}
-                                onClick={() => handleChoice(i)}
-                                className={`flex-1 aspect-square rounded-xl flex items-center justify-center cursor-pointer border-2 transition-all duration-200 shadow-lg
-                                    ${level > lvl ? 'bg-green-500/10 border-green-500/40 shadow-green-500/5' :
-                                        (lostAt?.lvl === lvl && lostAt?.idx === i) ? 'bg-red-500/30 border-red-500 animate-shake shadow-red-500/20' :
-                                            lvl === level ? 'bg-slate-700 border-yellow-500/70 hover:bg-slate-600 hover:scale-105 shadow-yellow-500/10' :
-                                                'bg-slate-800/40 border-slate-700 pointer-events-none'}`}
-                            >
-                                {level > lvl ? (
-                                    <div className="relative w-full h-[70%]">
-                                        <Image src="/apel.png" alt="Apple" fill className="object-contain p-1" priority />
-                                    </div>
-                                ) : (lostAt?.lvl === lvl && lostAt?.idx === i) ? (
-                                    <div className="relative w-full h-[80%] scale-125">
-                                        <Image src="/bomb2.png" alt="Bomb" fill className="object-contain p-1" priority />
-                                    </div>
-                                ) : (
-                                    <span className="text-xs sm:text-sm font-black text-slate-700">?</span>
-                                )}
-                            </div>
-                        ))}
+                        {[0, 1, 2, 3, 4].map((i) => {
+                            const isSelected = selectedIndices[lvl] === i;
+                            const isLostCell = lostAt?.lvl === lvl && lostAt?.idx === i;
+                            const isRevealedBomb = !gameActive && revealedBombs[lvl]?.includes(i);
+                            const isGameOver = !gameActive;
+                            
+                            return (
+                                <div 
+                                    key={i} 
+                                    onClick={() => handleChoice(i)} 
+                                    className={`flex-1 aspect-square rounded-xl flex items-center justify-center cursor-pointer border-2 transition-all duration-200 shadow-lg
+                                        ${isSelected ? (isLostCell ? 'bg-red-500/40 border-red-500 animate-shake shadow-red-500/30 z-20' : 'bg-green-500/20 border-green-500 shadow-green-500/20') : 
+                                          isRevealedBomb ? 'bg-slate-800/80 border-slate-500 shadow-inner' :
+                                          isGameOver ? 'bg-slate-800/40 border-slate-700' :
+                                          lvl === level && gameActive ? 'bg-slate-700 border-yellow-500/70 hover:bg-slate-600 hover:scale-105 shadow-yellow-500/10' :
+                                          'bg-slate-800/40 border-slate-700 pointer-events-none'}`}
+                                >
+                                    {isSelected ? (
+                                        isLostCell ? (
+                                            <div className="relative w-full h-[80%] scale-125">
+                                                <Image src="/bomb2.png" alt="Explosion" fill className="object-contain p-1" priority />
+                                            </div>
+                                        ) : (
+                                            <div className="relative w-full h-[75%] scale-110">
+                                                <Image src="/apel.png" alt="Apple" fill className="object-contain p-1" priority />
+                                            </div>
+                                        )
+                                    ) : isRevealedBomb ? (
+                                        <div className="relative w-full h-[65%]">
+                                            <Image src="/bomb2.png" alt="Bomb" fill className="object-contain p-1" priority />
+                                        </div>
+                                    ) : isGameOver ? (
+                                        <div className="relative w-full h-[65%]">
+                                            <Image src="/apel.png" alt="Apple" fill className="object-contain p-1" priority />
+                                        </div>
+                                    ) : (
+                                        <span className="text-xs sm:text-sm font-black text-slate-700">?</span>
+                                    )}
+                                </div>
+                            );
+
+                        })}
+
+
+
                     </div>
                 ))}
             </div>
